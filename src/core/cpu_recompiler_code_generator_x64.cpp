@@ -1836,6 +1836,7 @@ void CodeGenerator::EmitLoadGuestRAMFastmem(const Value& address, RegSize size, 
     m_emit->shr(GetHostReg32(RARG1), 12);
     m_emit->and_(GetHostReg32(RARG2), HOST_PAGE_OFFSET_MASK);
     m_emit->mov(GetHostReg64(RARG1), m_emit->qword[GetFastmemBasePtrReg() + GetHostReg64(RARG1) * 8]);
+    m_emit->and_(GetHostReg64(RARG1), ~static_cast<u32>(HOST_PAGE_OFFSET_MASK));
 
     switch (size)
     {
@@ -1924,6 +1925,8 @@ void CodeGenerator::EmitLoadGuestMemoryFastmem(const CodeBlockInstruction& cbi, 
       }
       break;
     }
+
+    EmitAddCPUStructField(offsetof(CPU::State, pending_ticks), Value::FromConstantU32(Bus::RAM_READ_TICKS));
   }
   else
   {
@@ -1935,6 +1938,9 @@ void CodeGenerator::EmitLoadGuestMemoryFastmem(const CodeBlockInstruction& cbi, 
     m_emit->shr(GetHostReg32(RARG1), 12);
     m_emit->and_(GetHostReg32(RARG2), HOST_PAGE_OFFSET_MASK);
     m_emit->mov(GetHostReg64(RARG1), m_emit->qword[GetFastmemBasePtrReg() + GetHostReg64(RARG1) * 8]);
+    m_emit->mov(GetHostReg32(RARG3), GetHostReg32(RARG1));
+    m_emit->and_(GetHostReg64(RARG1), ~static_cast<u32>(HOST_PAGE_OFFSET_MASK));
+    m_emit->and_(GetHostReg32(RARG3), static_cast<u32>(HOST_PAGE_OFFSET_MASK));
     bpi.host_pc = GetCurrentNearCodePointer();
 
     switch (size)
@@ -1951,10 +1957,9 @@ void CodeGenerator::EmitLoadGuestMemoryFastmem(const CodeBlockInstruction& cbi, 
         m_emit->mov(GetHostReg32(result.host_reg), m_emit->dword[GetHostReg64(RARG1) + GetHostReg64(RARG2)]);
         break;
     }
-  }
 
-  // TODO: BIOS reads...
-  EmitAddCPUStructField(offsetof(CPU::State, pending_ticks), Value::FromConstantU32(Bus::RAM_READ_TICKS));
+    m_emit->add(m_emit->dword[GetHostReg64(RCPUPTR) + offsetof(State, pending_ticks)], GetHostReg32(RARG3));
+  }
 
   // insert nops, we need at least 5 bytes for a relative jump
   const u32 fastmem_size =

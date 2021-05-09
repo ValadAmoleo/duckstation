@@ -76,7 +76,7 @@ u32 m_ram_code_page_count = 0;
 u8* g_ram = nullptr; // 2MB RAM
 u32 g_ram_size = 0;
 u32 g_ram_mask = 0;
-u8 g_bios[BIOS_SIZE]{}; // 512K BIOS ROM
+alignas(HOST_PAGE_SIZE) u8 g_bios[BIOS_SIZE]{}; // 512K BIOS ROM
 
 static std::array<TickCount, 3> m_exp1_access_time = {};
 static std::array<TickCount, 3> m_exp2_access_time = {};
@@ -315,9 +315,11 @@ static ALWAYS_INLINE u32 FastmemAddressToLUTPageIndex(u32 address)
   return address >> 12;
 }
 
-static ALWAYS_INLINE_RELEASE void SetLUTFastmemPage(u32 address, u8* ptr, bool writable)
+static ALWAYS_INLINE_RELEASE void SetLUTFastmemPage(u32 address, u8* ptr, bool writable, u32 read_ticks)
 {
-  m_fastmem_lut[FastmemAddressToLUTPageIndex(address)] = ptr;
+  DebugAssert((reinterpret_cast<uintptr_t>(ptr) & HOST_PAGE_OFFSET_MASK) == 0);
+  m_fastmem_lut[FastmemAddressToLUTPageIndex(address)] =
+    reinterpret_cast<u8*>(reinterpret_cast<uintptr_t>(ptr) | static_cast<uintptr_t>(read_ticks));
   m_fastmem_lut[FASTMEM_LUT_NUM_PAGES + FastmemAddressToLUTPageIndex(address)] = writable ? ptr : nullptr;
 }
 
@@ -410,7 +412,8 @@ void UpdateFastmemViews(CPUFastmemMode mode)
       auto view = m_memory_arena.CreateReservedView(end_address_inclusive - start_address + 1, map_address);
       if (!view)
       {
-        Log_ErrorPrintf("Failed to map reserved region %p (size 0x%08X)", map_address, end_address_inclusive - start_address + 1);
+        Log_ErrorPrintf("Failed to map reserved region %p (size 0x%08X)", map_address,
+                        end_address_inclusive - start_address + 1);
         return;
       }
 
@@ -450,21 +453,25 @@ void UpdateFastmemViews(CPUFastmemMode mode)
     for (u32 address = 0; address < g_ram_size; address += HOST_PAGE_SIZE)
     {
       SetLUTFastmemPage(base_address + address, &g_ram[address],
-                        !m_ram_code_bits[FastmemAddressToLUTPageIndex(address)]);
+                        !m_ram_code_bits[FastmemAddressToLUTPageIndex(address)], RAM_READ_TICKS);
     }
   };
+
+  auto MapScratchpad = [](u32 base_address) { SetLUTFastmemPage(base_address, CPU::g_state.dcache.data(), true, 0); };
 
   // KUSEG - cached
   MapRAM(0x00000000);
   MapRAM(0x00200000);
   MapRAM(0x00400000);
   MapRAM(0x00600000);
+  MapScratchpad(0x1F800000);
 
   // KSEG0 - cached
   MapRAM(0x80000000);
   MapRAM(0x80200000);
   MapRAM(0x80400000);
   MapRAM(0x80600000);
+  MapScratchpad(0x8F800000);
 
   // KSEG1 - uncached
   MapRAM(0xA0000000);
@@ -489,7 +496,7 @@ bool CanUseFastmemForAddress(VirtualMemoryAddress address)
 #endif
 
     case CPUFastmemMode::LUT:
-      return (paddr < g_ram_size);
+      return (paddr < g_ram_size) || ((paddr & CPU::DCACHE_LOCATION_MASK) == CPU::DCACHE_LOCATION);
 
     case CPUFastmemMode::Disabled:
     default:
@@ -547,7 +554,7 @@ void SetCodePageFastmemProtection(u32 page_index, bool writable)
     // mirrors...
     const u32 ram_address = page_index * HOST_PAGE_SIZE;
     for (u32 mirror_start : m_fastmem_ram_mirrors)
-      SetLUTFastmemPage(mirror_start + ram_address, &g_ram[ram_address], writable);
+      SetLUTFastmemPage(mirror_start + ram_address, &g_ram[ram_address], writable, RAM_READ_TICKS);
   }
 }
 
@@ -575,7 +582,7 @@ void ClearRAMCodePageFlags()
     {
       const u32 addr = (i * HOST_PAGE_SIZE);
       for (u32 mirror_start : m_fastmem_ram_mirrors)
-        SetLUTFastmemPage(mirror_start + addr, &g_ram[addr], true);
+        SetLUTFastmemPage(mirror_start + addr, &g_ram[addr], true, RAM_READ_TICKS);
     }
   }
 }
